@@ -142,6 +142,23 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
+vpn_route_ready() {
+  # hide.me 通过 RPDB + table 55555 实现漏网保护，主路由表不会切成 default dev vpn。
+  if ! ip rule show 2>/dev/null | grep -Eq '(^|[[:space:]])lookup 55555($|[[:space:]])'; then
+    return 1
+  fi
+
+  if ip route show table 55555 2>/dev/null | grep -Eq "(^|[[:space:]])dev ${IFACE}($|[[:space:]])"; then
+    return 0
+  fi
+
+  if ip -6 route show table 55555 2>/dev/null | grep -Eq "(^|[[:space:]])dev ${IFACE}($|[[:space:]])"; then
+    return 0
+  fi
+
+  return 1
+}
+
 log "requesting access token from $TOKEN_HOST"
 request_access_token
 
@@ -166,10 +183,8 @@ while [ "$attempt" -lt "$max_attempts" ]; do
     wait "$VPN_PID"
     exit 1
   fi
-  if ip link show "$IFACE" >/dev/null 2>&1; then
-    if ip route show default dev "$IFACE" 2>/dev/null | grep -q . || ip -6 route show default dev "$IFACE" 2>/dev/null | grep -q .; then
-      break
-    fi
+  if ip link show "$IFACE" >/dev/null 2>&1 && vpn_route_ready; then
+    break
   fi
   attempt=$((attempt + 1))
   sleep 1
