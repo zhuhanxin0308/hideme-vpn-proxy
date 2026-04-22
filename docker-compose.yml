@@ -1,0 +1,66 @@
+services:
+  vpn:
+    image: ${VPN_IMAGE_REPOSITORY:-hideme-vpn}:${IMAGE_TAG:-local}
+    build:
+      context: ./vpn
+      args:
+        HIDEME_VERSION: ${HIDEME_VERSION:-0.9.10}
+    cap_add:
+      - NET_ADMIN
+    environment:
+      HIDEME_USERNAME: ${HIDEME_USERNAME}
+      HIDEME_PASSWORD: ${HIDEME_PASSWORD}
+      HIDEME_NODE: ${HIDEME_NODE:-any}
+      HIDEME_TOKEN_HOST: ${HIDEME_TOKEN_HOST:-free.hideservers.net}
+      HIDEME_INTERFACE: ${HIDEME_INTERFACE:-vpn}
+      HIDEME_TUNNEL_MODE: ${HIDEME_TUNNEL_MODE:-ipv4}
+      HIDEME_KILL_SWITCH: ${HIDEME_KILL_SWITCH:-true}
+      PROXY_PORT: ${PROXY_PORT:-3128}
+      SPLIT_TUNNEL_BYPASS: ${SPLIT_TUNNEL_BYPASS:-}
+      EXTRA_CONNECT_ARGS: ${EXTRA_CONNECT_ARGS:-}
+      VPN_READY_FILE: /shared/vpn.ready
+    volumes:
+      - shared-state:/shared
+    ports:
+      - "${PROXY_PORT:-3128}:${PROXY_PORT:-3128}"
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /shared/vpn.ready && ip link show ${HIDEME_INTERFACE:-vpn} >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+
+  proxy:
+    image: ${PROXY_IMAGE_REPOSITORY:-hideme-proxy}:${IMAGE_TAG:-local}
+    build:
+      context: ./proxy
+    network_mode: "service:vpn"
+    depends_on:
+      vpn:
+        condition: service_started
+    environment:
+      PROXY_PORT: ${PROXY_PORT:-3128}
+      PROXY_LISTEN: ${PROXY_LISTEN:-0.0.0.0}
+      PROXY_TIMEOUT: ${PROXY_TIMEOUT:-600}
+      PROXY_MAX_CLIENTS: ${PROXY_MAX_CLIENTS:-200}
+      PROXY_MIN_SPARE_SERVERS: ${PROXY_MIN_SPARE_SERVERS:-5}
+      PROXY_MAX_SPARE_SERVERS: ${PROXY_MAX_SPARE_SERVERS:-20}
+      PROXY_START_SERVERS: ${PROXY_START_SERVERS:-10}
+      PROXY_MAX_REQUEST_SIZE: ${PROXY_MAX_REQUEST_SIZE:-0}
+      PROXY_ALLOW: ${PROXY_ALLOW:-}
+      PROXY_BASIC_AUTH_USER: ${PROXY_BASIC_AUTH_USER:-}
+      PROXY_BASIC_AUTH_PASSWORD: ${PROXY_BASIC_AUTH_PASSWORD:-}
+      VPN_READY_FILE: /shared/vpn.ready
+    volumes:
+      - shared-state:/shared
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 ${PROXY_PORT:-3128}"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  shared-state:
