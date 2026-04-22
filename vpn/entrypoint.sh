@@ -49,6 +49,25 @@ yaml_quote() {
   printf "'%s'" "$escaped"
 }
 
+json_quote() {
+  # Access-Token REST 请求体是 JSON，因此要转义反斜杠、双引号和常见控制字符。
+  escaped=$(printf '%s' "$1" | \
+    sed \
+      -e 's/\\/\\\\/g' \
+      -e 's/"/\\"/g' \
+      -e 's/\t/\\t/g' \
+      -e 's/\r/\\r/g')
+  printf '"%s"' "$escaped"
+}
+
+resolve_token_host() {
+  # 与 hide.me 自身的主机名规则对齐：短名称补全到 hideservers.net。
+  case "$1" in
+    *.*) printf '%s' "$1" ;;
+    *) printf '%s.hideservers.net' "$1" ;;
+  esac
+}
+
 write_hide_me_config() {
   # hide.me 在非终端环境下不会交互读取密码，因此必须把敏感凭据落到配置文件里。
   cat > "$CONFIG_FILE" <<EOF
@@ -59,6 +78,24 @@ client:
   password: $(yaml_quote "$HIDEME_PASSWORD")
 EOF
   chmod 600 "$CONFIG_FILE"
+}
+
+request_access_token() {
+  # 官方 CLI 的 token 子命令会进入交互式凭据流程，因此容器里改为直接调用 REST 接口取 token。
+  token_host="$(resolve_token_host "$TOKEN_HOST")"
+  response=$(curl --fail --silent --show-error \
+    --cacert "$HIDEME_CA_FILE" \
+    --header 'Content-Type: application/json' \
+    --data "{\"domain\":\"hide.me\",\"host\":\"\",\"username\":$(json_quote "$HIDEME_USERNAME"),\"password\":$(json_quote "$HIDEME_PASSWORD")}" \
+    "https://${token_host}:432/v1.0.0/accessToken")
+
+  case "$response" in
+    \"*\") token_value=${response#\"}; token_value=${token_value%\"} ;;
+    *) echo "Unexpected access token response" >&2; return 1 ;;
+  esac
+
+  printf '%s' "$token_value" > "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
 }
 
 mkdir -p "$CONF_DIR" "$(dirname "$READY_FILE")"
@@ -94,7 +131,7 @@ cleanup() {
 trap cleanup INT TERM EXIT
 
 log "requesting access token from $TOKEN_HOST"
-"$HIDEME_BIN" -c "$CONFIG_FILE" token "$TOKEN_HOST"
+request_access_token
 
 log "connecting to node $NODE on interface $IFACE"
 # 用参数数组方式拼接命令，避免后续拼接选项时丢失顺序。
