@@ -17,9 +17,10 @@ require_env() {
 require_env HIDEME_USERNAME
 require_env HIDEME_PASSWORD
 
-# 统一集中 hide.me 运行时路径，避免状态文件分散。
-HIDEME_BIN="/opt/hide.me/hide.me"
-CONF_DIR="/run/hide.me"
+# 统一集中 hide.me 运行时路径，避免状态文件分散；同时允许测试或特殊部署覆写默认位置。
+HIDEME_BIN="${HIDEME_BIN_PATH:-/opt/hide.me/hide.me}"
+HIDEME_CA_FILE="${HIDEME_CA_CERT_PATH:-/opt/hide.me/CA.pem}"
+CONF_DIR="${HIDEME_CONF_DIR:-/run/hide.me}"
 TOKEN_FILE="$CONF_DIR/accessToken.txt"
 READY_FILE="${VPN_READY_FILE:-/shared/vpn.ready}"
 NODE="${HIDEME_NODE:-any}"
@@ -30,6 +31,16 @@ KILL_SWITCH="${HIDEME_KILL_SWITCH:-true}"
 PROXY_PORT="${PROXY_PORT:-3128}"
 SPLIT_BYPASS="${SPLIT_TUNNEL_BYPASS:-}"
 EXTRA_CONNECT_ARGS="${EXTRA_CONNECT_ARGS:-}"
+
+if [ ! -x "$HIDEME_BIN" ]; then
+  echo "hide.me binary is missing or not executable: $HIDEME_BIN" >&2
+  exit 1
+fi
+
+if [ ! -f "$HIDEME_CA_FILE" ]; then
+  echo "hide.me CA bundle is missing: $HIDEME_CA_FILE" >&2
+  exit 1
+fi
 
 mkdir -p "$CONF_DIR" "$(dirname "$READY_FILE")"
 rm -f "$READY_FILE"
@@ -49,27 +60,27 @@ esac
 
 kill_flag=""
 case "$KILL_SWITCH" in
-  true|1|yes) kill_flag="--kill-switch=true" ;;
-  false|0|no) kill_flag="--kill-switch=false" ;;
+  true|1|yes) kill_flag="-k=true" ;;
+  false|0|no) kill_flag="-k=false" ;;
   *) echo "Unsupported HIDEME_KILL_SWITCH: $KILL_SWITCH" >&2; exit 1 ;;
 esac
 
 cleanup() {
   # 容器退出时主动断开 VPN，并清理就绪标记。
   log "disconnecting hide.me"
-  "$HIDEME_BIN" -t "$TOKEN_FILE" disconnect >/dev/null 2>&1 || true
+  "$HIDEME_BIN" -ca "$HIDEME_CA_FILE" -t "$TOKEN_FILE" disconnect >/dev/null 2>&1 || true
   rm -f "$READY_FILE"
 }
 trap cleanup INT TERM EXIT
 
 log "requesting access token from $TOKEN_HOST"
-"$HIDEME_BIN" -u "$HIDEME_USERNAME" -P "$HIDEME_PASSWORD" -t "$TOKEN_FILE" token "$TOKEN_HOST"
+"$HIDEME_BIN" -ca "$HIDEME_CA_FILE" -u "$HIDEME_USERNAME" -P "$HIDEME_PASSWORD" -t "$TOKEN_FILE" token "$TOKEN_HOST"
 
 log "connecting to node $NODE on interface $IFACE"
 # 用参数数组方式拼接命令，避免后续拼接选项时丢失顺序。
 set -- "$HIDEME_BIN"
 [ -n "$mode_args" ] && set -- "$@" "$mode_args"
-set -- "$@" "$kill_flag" -u "$HIDEME_USERNAME" -P "$HIDEME_PASSWORD" -t "$TOKEN_FILE" -i "$IFACE" -s "$SPLIT_CIDRS"
+set -- "$@" -ca "$HIDEME_CA_FILE" "$kill_flag" -u "$HIDEME_USERNAME" -P "$HIDEME_PASSWORD" -t "$TOKEN_FILE" -i "$IFACE" -s "$SPLIT_CIDRS"
 for arg in $EXTRA_CONNECT_ARGS; do
   set -- "$@" "$arg"
 done
