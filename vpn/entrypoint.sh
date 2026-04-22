@@ -25,7 +25,7 @@ TOKEN_FILE="$CONF_DIR/accessToken.txt"
 CONFIG_FILE="$CONF_DIR/hide.me.yml"
 READY_FILE="${VPN_READY_FILE:-/shared/vpn.ready}"
 NODE="${HIDEME_NODE:-any}"
-TOKEN_HOST="${HIDEME_TOKEN_HOST:-free.hideservers.net}"
+TOKEN_HOST="${HIDEME_TOKEN_HOST:-any}"
 IFACE="${HIDEME_INTERFACE:-vpn}"
 TUNNEL_MODE="${HIDEME_TUNNEL_MODE:-ipv4}"
 KILL_SWITCH="${HIDEME_KILL_SWITCH:-true}"
@@ -60,11 +60,22 @@ json_quote() {
   printf '"%s"' "$escaped"
 }
 
-resolve_token_host() {
-  # 与 hide.me 自身的主机名规则对齐：短名称补全到 hideservers.net。
+normalize_hide_me_host() {
+  # 兼容旧版本错误使用的 free 主机名，并统一抽取 hide.me/hideservers 的短名称。
   case "$1" in
-    *.*) printf '%s' "$1" ;;
-    *) printf '%s.hideservers.net' "$1" ;;
+    ""|free|free.hide.me|free.hideservers.net|any|any.hide.me|any.hideservers.net) printf '%s' "any" ;;
+    *.hideservers.net) printf '%s' "${1%.hideservers.net}" ;;
+    *.hide.me) printf '%s' "${1%.hide.me}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+resolve_token_host() {
+  # 与官方 CLI 保持一致：请求 URL 用完整域名，请求体 host 用短名称。
+  host_short_name="$(normalize_hide_me_host "$1")"
+  case "$host_short_name" in
+    *.*) printf '%s' "$host_short_name" ;;
+    *) printf '%s.hideservers.net' "$host_short_name" ;;
   esac
 }
 
@@ -82,11 +93,12 @@ EOF
 
 request_access_token() {
   # 官方 CLI 的 token 子命令会进入交互式凭据流程，因此容器里改为直接调用 REST 接口取 token。
+  token_host_short_name="$(normalize_hide_me_host "$TOKEN_HOST")"
   token_host="$(resolve_token_host "$TOKEN_HOST")"
   response=$(curl --fail --silent --show-error \
     --cacert "$HIDEME_CA_FILE" \
     --header 'Content-Type: application/json' \
-    --data "{\"domain\":\"hide.me\",\"host\":\"\",\"username\":$(json_quote "$HIDEME_USERNAME"),\"password\":$(json_quote "$HIDEME_PASSWORD")}" \
+    --data-binary "{\"domain\":\"hide.me\",\"host\":$(json_quote "$token_host_short_name"),\"username\":$(json_quote "$HIDEME_USERNAME"),\"password\":$(json_quote "$HIDEME_PASSWORD")}" \
     "https://${token_host}:432/v1.0.0/accessToken")
 
   case "$response" in
