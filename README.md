@@ -137,7 +137,7 @@ SPLIT_TUNNEL_BYPASS=203.0.113.24/32,198.51.100.0/24
 - `HIDEME_USERNAME`：必填
 - `HIDEME_PASSWORD`：必填
 - `HIDEME_NODE`：默认 `any`
-- `HIDEME_TOKEN_HOST`：默认 `free.hideservers.net`
+- `HIDEME_TOKEN_HOST`：默认 `any`
 - `HIDEME_INTERFACE`：默认 `vpn`
 - `HIDEME_TUNNEL_MODE`：`ipv4`、`ipv6`、`dual`，默认 `ipv4`
 - `HIDEME_KILL_SWITCH`：默认 `true`
@@ -152,7 +152,6 @@ SPLIT_TUNNEL_BYPASS=203.0.113.24/32,198.51.100.0/24
 - `PROXY_BASIC_AUTH_USER` / `PROXY_BASIC_AUTH_PASSWORD`：可选 Basic Auth
 - `PROXY_TIMEOUT`：默认 `600`
 - `PROXY_MAX_CLIENTS`：默认 `200`
-- `PROXY_MIN_SPARE_SERVERS` / `PROXY_MAX_SPARE_SERVERS` / `PROXY_START_SERVERS`：tinyproxy 进程池参数
 
 ## 启动
 
@@ -223,7 +222,7 @@ docker compose exec vpn sh -lc 'ls -l /shared && ip link show vpn'
 ### 查看代理是否在监听
 
 ```bash
-docker compose exec proxy sh -lc 'nc -zv 127.0.0.1 3128'
+docker compose exec proxy sh -lc '/app/proxy-healthcheck.sh && echo proxy healthy'
 ```
 
 ### 常见问题

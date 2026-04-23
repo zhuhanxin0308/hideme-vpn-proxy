@@ -11,7 +11,7 @@ services:
       HIDEME_USERNAME: ${HIDEME_USERNAME}
       HIDEME_PASSWORD: ${HIDEME_PASSWORD}
       HIDEME_NODE: ${HIDEME_NODE:-any}
-      HIDEME_TOKEN_HOST: ${HIDEME_TOKEN_HOST:-free.hideservers.net}
+      HIDEME_TOKEN_HOST: ${HIDEME_TOKEN_HOST:-any}
       HIDEME_INTERFACE: ${HIDEME_INTERFACE:-vpn}
       HIDEME_TUNNEL_MODE: ${HIDEME_TUNNEL_MODE:-ipv4}
       HIDEME_KILL_SWITCH: ${HIDEME_KILL_SWITCH:-true}
@@ -44,9 +44,6 @@ services:
       PROXY_LISTEN: ${PROXY_LISTEN:-0.0.0.0}
       PROXY_TIMEOUT: ${PROXY_TIMEOUT:-600}
       PROXY_MAX_CLIENTS: ${PROXY_MAX_CLIENTS:-200}
-      PROXY_MIN_SPARE_SERVERS: ${PROXY_MIN_SPARE_SERVERS:-5}
-      PROXY_MAX_SPARE_SERVERS: ${PROXY_MAX_SPARE_SERVERS:-20}
-      PROXY_START_SERVERS: ${PROXY_START_SERVERS:-10}
       PROXY_MAX_REQUEST_SIZE: ${PROXY_MAX_REQUEST_SIZE:-0}
       PROXY_ALLOW: ${PROXY_ALLOW:-}
       PROXY_BASIC_AUTH_USER: ${PROXY_BASIC_AUTH_USER:-}
@@ -55,7 +52,7 @@ services:
     volumes:
       - shared-state:/shared
     healthcheck:
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 ${PROXY_PORT:-3128}"]
+      test: ["CMD", "/app/proxy-healthcheck.sh"]
       interval: 20s
       timeout: 5s
       retries: 10

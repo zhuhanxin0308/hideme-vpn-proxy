@@ -8,6 +8,7 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 COPY entrypoint.sh /app/proxy-entrypoint.sh
-RUN chmod +x /app/proxy-entrypoint.sh
+COPY healthcheck.sh /app/proxy-healthcheck.sh
+RUN chmod +x /app/proxy-entrypoint.sh /app/proxy-healthcheck.sh
 
 ENTRYPOINT ["/sbin/tini", "--", "/app/proxy-entrypoint.sh"]
