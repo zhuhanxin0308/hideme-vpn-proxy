@@ -10,6 +10,7 @@ class ImageRepositoryLayoutTests(unittest.TestCase):
         # 统一从仓库根目录读取文件，避免测试依赖当前工作目录。
         cls.repo_root = pathlib.Path(__file__).resolve().parents[1]
         cls.compose_text = (cls.repo_root / "docker-compose.yml").read_text(encoding="utf-8")
+        cls.env_example_text = (cls.repo_root / ".env.example").read_text(encoding="utf-8")
         cls.vpn_dockerfile_text = (cls.repo_root / "vpn" / "Dockerfile").read_text(encoding="utf-8")
         cls.proxy_dockerfile_text = (cls.repo_root / "proxy" / "Dockerfile").read_text(encoding="utf-8")
         cls.workflow_path = cls.repo_root / ".github" / "workflows" / "publish-images.yml"
@@ -28,6 +29,7 @@ class ImageRepositoryLayoutTests(unittest.TestCase):
         self.assertIn("context: ./vpn", self.compose_text)
         self.assertNotIn("dockerfile: vpn/Dockerfile", self.compose_text)
         self.assertIn("COPY entrypoint.sh /app/vpn-entrypoint.sh", self.vpn_dockerfile_text)
+        self.assertIn("COPY healthcheck.sh /app/vpn-healthcheck.sh", self.vpn_dockerfile_text)
         self.assertNotIn("COPY scripts/", self.vpn_dockerfile_text)
         self.assertNotIn("COPY ../scripts/", self.vpn_dockerfile_text)
 
@@ -36,6 +38,7 @@ class ImageRepositoryLayoutTests(unittest.TestCase):
         self.assertIn("context: ./proxy", self.compose_text)
         self.assertNotIn("dockerfile: proxy/Dockerfile", self.compose_text)
         self.assertIn("COPY entrypoint.sh /app/proxy-entrypoint.sh", self.proxy_dockerfile_text)
+        self.assertIn("COPY healthcheck.sh /app/proxy-healthcheck.sh", self.proxy_dockerfile_text)
         self.assertNotIn("COPY scripts/", self.proxy_dockerfile_text)
         self.assertNotIn("COPY ../scripts/", self.proxy_dockerfile_text)
 
@@ -54,6 +57,36 @@ class ImageRepositoryLayoutTests(unittest.TestCase):
         self.assertNotIn("FROM debian:", self.vpn_dockerfile_text)
         self.assertNotIn("apt-get install", self.vpn_dockerfile_text)
         self.assertNotIn("dpkg --print-architecture", self.vpn_dockerfile_text)
+
+    def test_token_host_defaults_to_any(self) -> None:
+        # Access-Token 默认主机必须与官方脚本保持一致，不能再回到错误的 free.hideservers.net。
+        self.assertIn("HIDEME_TOKEN_HOST=any", self.env_example_text)
+        self.assertIn("HIDEME_TOKEN_HOST: ${HIDEME_TOKEN_HOST:-any}", self.compose_text)
+        self.assertNotIn("free.hideservers.net", self.env_example_text)
+
+    def test_vpn_healthcheck_uses_dedicated_script(self) -> None:
+        # VPN 健康检查必须调用自己的脚本，不能误接到 proxy 的检查逻辑。
+        self.assertIn('test: ["CMD", "/app/vpn-healthcheck.sh"]', self.compose_text)
+        self.assertNotIn('test: ["CMD", "/app/proxy-healthcheck.sh"]', self.compose_text.split("  proxy:")[0])
+
+    def test_vpn_fallback_dns_defaults_to_google_public_dns(self) -> None:
+        # 运行时需要把 8.8.8.8 注入 resolv.conf，因此默认配置必须显式暴露出来。
+        self.assertIn("VPN_FALLBACK_DNS=8.8.8.8", self.env_example_text)
+        self.assertIn("VPN_FALLBACK_DNS: ${VPN_FALLBACK_DNS:-8.8.8.8}", self.compose_text)
+
+    def test_proxy_legacy_pool_settings_are_removed(self) -> None:
+        # 新版 tinyproxy 已不再使用旧进程池参数，仓库默认配置里不能继续暴露这些无效项。
+        self.assertNotIn("PROXY_MIN_SPARE_SERVERS", self.env_example_text)
+        self.assertNotIn("PROXY_MAX_SPARE_SERVERS", self.env_example_text)
+        self.assertNotIn("PROXY_START_SERVERS", self.env_example_text)
+        self.assertNotIn("PROXY_MIN_SPARE_SERVERS", self.compose_text)
+        self.assertNotIn("PROXY_MAX_SPARE_SERVERS", self.compose_text)
+        self.assertNotIn("PROXY_START_SERVERS", self.compose_text)
+
+    def test_proxy_healthcheck_checks_listen_state_without_netcat(self) -> None:
+        # proxy 健康检查只需要判断端口是否已进入监听，不应再依赖 nc 或 HTTP CONNECT。
+        self.assertIn('test: ["CMD", "/app/proxy-healthcheck.sh"]', self.compose_text)
+        self.assertNotIn("netcat-openbsd", self.proxy_dockerfile_text)
 
     def test_publish_workflow_exists(self) -> None:
         # 发布工作流是交付目标之一，文件必须存在。

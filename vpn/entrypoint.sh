@@ -24,6 +24,8 @@ CONF_DIR="${HIDEME_CONF_DIR:-/run/hide.me}"
 TOKEN_FILE="$CONF_DIR/accessToken.txt"
 CONFIG_FILE="$CONF_DIR/hide.me.yml"
 READY_FILE="${VPN_READY_FILE:-/shared/vpn.ready}"
+RESOLV_CONF_PATH="${VPN_RESOLV_CONF_PATH:-/etc/resolv.conf}"
+FALLBACK_DNS="${VPN_FALLBACK_DNS:-8.8.8.8}"
 NODE="${HIDEME_NODE:-any}"
 TOKEN_HOST="${HIDEME_TOKEN_HOST:-any}"
 IFACE="${HIDEME_INTERFACE:-vpn}"
@@ -91,6 +93,22 @@ EOF
   chmod 600 "$CONFIG_FILE"
 }
 
+ensure_fallback_dns() {
+  # Docker 会在容器启动时生成 resolv.conf，这里在运行时追加公共解析器作为兜底。
+  [ -n "$FALLBACK_DNS" ] || return 0
+
+  if [ ! -f "$RESOLV_CONF_PATH" ]; then
+    printf 'nameserver %s\n' "$FALLBACK_DNS" > "$RESOLV_CONF_PATH"
+    return 0
+  fi
+
+  if grep -Eq "^[[:space:]]*nameserver[[:space:]]+${FALLBACK_DNS}([[:space:]]|$)" "$RESOLV_CONF_PATH"; then
+    return 0
+  fi
+
+  printf 'nameserver %s\n' "$FALLBACK_DNS" >> "$RESOLV_CONF_PATH"
+}
+
 request_access_token() {
   # 官方 CLI 的 token 子命令会进入交互式凭据流程，因此容器里改为直接调用 REST 接口取 token。
   token_host_short_name="$(normalize_hide_me_host "$TOKEN_HOST")"
@@ -113,6 +131,7 @@ request_access_token() {
 mkdir -p "$CONF_DIR" "$(dirname "$READY_FILE")"
 rm -f "$READY_FILE"
 write_hide_me_config
+ensure_fallback_dns
 
 SPLIT_CIDRS="127.0.0.0/8"
 if [ -n "$SPLIT_BYPASS" ]; then
@@ -196,6 +215,7 @@ if [ "$attempt" -ge "$max_attempts" ]; then
   exit 1
 fi
 
+ensure_fallback_dns
 printf 'ready\n' > "$READY_FILE"
 log "vpn ready; proxy port $PROXY_PORT is expected in shared namespace"
 wait "$VPN_PID"

@@ -15,6 +15,7 @@ services:
       HIDEME_INTERFACE: ${HIDEME_INTERFACE:-vpn}
       HIDEME_TUNNEL_MODE: ${HIDEME_TUNNEL_MODE:-ipv4}
       HIDEME_KILL_SWITCH: ${HIDEME_KILL_SWITCH:-true}
+      VPN_FALLBACK_DNS: ${VPN_FALLBACK_DNS:-8.8.8.8}
       PROXY_PORT: ${PROXY_PORT:-3128}
       SPLIT_TUNNEL_BYPASS: ${SPLIT_TUNNEL_BYPASS:-}
       EXTRA_CONNECT_ARGS: ${EXTRA_CONNECT_ARGS:-}
@@ -24,7 +25,7 @@ services:
     ports:
       - "${PROXY_PORT:-3128}:${PROXY_PORT:-3128}"
     healthcheck:
-      test: ["CMD", "/app/proxy-healthcheck.sh"]
+      test: ["CMD", "/app/vpn-healthcheck.sh"]
       interval: 20s
       timeout: 5s
       retries: 10

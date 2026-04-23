@@ -31,8 +31,6 @@ if [ ! -f "$READY_FILE" ]; then
 fi
 
 cat > "$CONF_FILE" <<EOF
-User tinyproxy
-Group tinyproxy
 Port $PORT
 Listen $LISTEN
 Timeout $TIMEOUT

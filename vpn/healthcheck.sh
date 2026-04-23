@@ -4,7 +4,10 @@ set -eu
 READY_FILE="${VPN_READY_FILE:-/shared/vpn.ready}"
 IFACE="${HIDEME_INTERFACE:-vpn}"
 ROUTE_TABLE="${VPN_ROUTE_TABLE:-55555}"
-DNS_CONNECT_TIMEOUT="${VPN_DNS_CONNECT_TIMEOUT:-3}"
+RESOLV_CONF_PATH="${VPN_RESOLV_CONF_PATH:-/etc/resolv.conf}"
+DNS_TEST_HOST="${VPN_DNS_TEST_HOST:-www.google.com}"
+DNS_LOOKUP_TIMEOUT="${VPN_DNS_LOOKUP_TIMEOUT:-5}"
+FALLBACK_DNS="${VPN_FALLBACK_DNS:-8.8.8.8}"
 
 fail() {
   echo "vpn healthcheck failed: $*" >&2
@@ -29,59 +32,26 @@ has_policy_route() {
   return 1
 }
 
-resolver_route_exists() {
-  ns="$1"
-
-  case "$ns" in
-    *:*)
-      ip -6 route get "$ns" 2>/dev/null | grep -Eq "(^|[[:space:]])dev ${IFACE}([[:space:]]|$)"
-      ;;
-    *)
-      ip route get "$ns" 2>/dev/null | grep -Eq "(^|[[:space:]])dev ${IFACE}([[:space:]]|$)"
-      ;;
-  esac
+has_configured_nameserver() {
+  grep -Eq '^[[:space:]]*nameserver[[:space:]]+' "$RESOLV_CONF_PATH"
 }
 
-resolver_reachable() {
-  ns="$1"
-
-  case "$ns" in
-    *:*) curl_host="[$ns]" ;;
-    *)   curl_host="$ns" ;;
-  esac
-
-  curl \
-    --silent \
-    --output /dev/null \
-    --connect-timeout "$DNS_CONNECT_TIMEOUT" \
-    --max-time "$DNS_CONNECT_TIMEOUT" \
-    "telnet://${curl_host}:53"
+has_fallback_dns() {
+  [ -z "$FALLBACK_DNS" ] && return 0
+  grep -Eq "^[[:space:]]*nameserver[[:space:]]+${FALLBACK_DNS}([[:space:]]|$)" "$RESOLV_CONF_PATH"
 }
 
 dns_is_healthy() {
-  set -- $(awk '/^nameserver[ \t]+/ {print $2}' /etc/resolv.conf)
-
-  [ "$#" -gt 0 ] || return 1
-
-  for ns in "$@"; do
-    [ -n "$ns" ] || continue
-
-    if ! resolver_route_exists "$ns"; then
-      continue
-    fi
-
-    if resolver_reachable "$ns"; then
-      return 0
-    fi
-  done
-
-  return 1
+  timeout "$DNS_LOOKUP_TIMEOUT" getent hosts "$DNS_TEST_HOST" 2>/dev/null | grep -Eq '^[0-9A-Fa-f:.]+[[:space:]]+'
 }
 
 [ -f "$READY_FILE" ] || fail "ready file missing: $READY_FILE"
 ip link show "$IFACE" >/dev/null 2>&1 || fail "interface missing: $IFACE"
 has_global_addr || fail "interface has no global address: $IFACE"
 has_policy_route || fail "route table ${ROUTE_TABLE} not bound to ${IFACE}"
-dns_is_healthy || fail "no reachable resolver from /etc/resolv.conf"
+[ -f "$RESOLV_CONF_PATH" ] || fail "resolv.conf missing: $RESOLV_CONF_PATH"
+has_configured_nameserver || fail "no nameserver configured in ${RESOLV_CONF_PATH}"
+has_fallback_dns || fail "fallback dns missing from ${RESOLV_CONF_PATH}: ${FALLBACK_DNS}"
+dns_is_healthy || fail "dns lookup failed for ${DNS_TEST_HOST}"
 
 exit 0
