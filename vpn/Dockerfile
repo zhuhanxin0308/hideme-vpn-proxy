@@ -28,6 +28,7 @@ RUN set -eux; \
 
 WORKDIR /app
 COPY entrypoint.sh /app/vpn-entrypoint.sh
-RUN chmod +x /app/vpn-entrypoint.sh
+COPY healthcheck.sh /app/vpn-healthcheck.sh
+RUN chmod +x /app/vpn-entrypoint.sh /app/vpn-healthcheck.sh
 
 ENTRYPOINT ["/sbin/tini", "--", "/app/vpn-entrypoint.sh"]
