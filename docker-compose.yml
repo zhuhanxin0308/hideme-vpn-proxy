@@ -24,7 +24,7 @@ services:
     ports:
       - "${PROXY_PORT:-3128}:${PROXY_PORT:-3128}"
     healthcheck:
-      test: ["CMD-SHELL", "test -f /shared/vpn.ready && ip link show ${HIDEME_INTERFACE:-vpn} >/dev/null 2>&1"]
+      test: ["CMD", "/app/proxy-healthcheck.sh"]
       interval: 20s
       timeout: 5s
       retries: 10
