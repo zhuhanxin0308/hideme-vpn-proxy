@@ -16,14 +16,13 @@ services:
       HIDEME_TUNNEL_MODE: ${HIDEME_TUNNEL_MODE:-ipv4}
       HIDEME_KILL_SWITCH: ${HIDEME_KILL_SWITCH:-true}
       VPN_FALLBACK_DNS: ${VPN_FALLBACK_DNS:-8.8.8.8}
-      PROXY_PORT: ${PROXY_PORT:-3128}
+      VPN_LOCAL_BYPASS_CIDRS: ${VPN_LOCAL_BYPASS_CIDRS:-127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      PROXY_PORT: ${PROXY_EGRESS_PORT:-3129}
       SPLIT_TUNNEL_BYPASS: ${SPLIT_TUNNEL_BYPASS:-}
       EXTRA_CONNECT_ARGS: ${EXTRA_CONNECT_ARGS:-}
       VPN_READY_FILE: /shared/vpn.ready
     volumes:
       - shared-state:/shared
-    ports:
-      - "${PROXY_PORT:-3128}:${PROXY_PORT:-3128}"
     healthcheck:
       test: ["CMD", "/app/vpn-healthcheck.sh"]
       interval: 20s
@@ -32,7 +31,7 @@ services:
       start_period: 90s
     restart: unless-stopped
 
-  proxy:
+  proxy-egress:
     image: ${PROXY_IMAGE_REPOSITORY:-hideme-proxy}:${IMAGE_TAG:-local}
     build:
       context: ./proxy
@@ -40,6 +39,36 @@ services:
     depends_on:
       vpn:
         condition: service_started
+    environment:
+      PROXY_PORT: ${PROXY_EGRESS_PORT:-3129}
+      PROXY_LISTEN: ${PROXY_EGRESS_LISTEN:-0.0.0.0}
+      PROXY_TIMEOUT: ${PROXY_TIMEOUT:-600}
+      PROXY_MAX_CLIENTS: ${PROXY_MAX_CLIENTS:-200}
+      PROXY_MAX_REQUEST_SIZE: ${PROXY_MAX_REQUEST_SIZE:-0}
+      PROXY_ALLOW: ${PROXY_EGRESS_ALLOW:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      PROXY_BASIC_AUTH_USER: ${PROXY_EGRESS_BASIC_AUTH_USER:-}
+      PROXY_BASIC_AUTH_PASSWORD: ${PROXY_EGRESS_BASIC_AUTH_PASSWORD:-}
+      PROXY_REQUIRE_AUTH: false
+      VPN_READY_FILE: /shared/vpn.ready
+    volumes:
+      - shared-state:/shared
+    healthcheck:
+      test: ["CMD", "/app/proxy-healthcheck.sh"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+
+  proxy:
+    image: ${PROXY_IMAGE_REPOSITORY:-hideme-proxy}:${IMAGE_TAG:-local}
+    build:
+      context: ./proxy
+    depends_on:
+      vpn:
+        condition: service_started
+      proxy-egress:
+        condition: service_healthy
     environment:
       PROXY_PORT: ${PROXY_PORT:-3128}
       PROXY_LISTEN: ${PROXY_LISTEN:-0.0.0.0}
@@ -49,9 +78,15 @@ services:
       PROXY_ALLOW: ${PROXY_ALLOW:-}
       PROXY_BASIC_AUTH_USER: ${PROXY_BASIC_AUTH_USER:-}
       PROXY_BASIC_AUTH_PASSWORD: ${PROXY_BASIC_AUTH_PASSWORD:-}
+      PROXY_REQUIRE_AUTH: ${PROXY_REQUIRE_AUTH:-true}
+      PROXY_UPSTREAM_TYPE: http
+      PROXY_UPSTREAM_HOST: vpn
+      PROXY_UPSTREAM_PORT: ${PROXY_EGRESS_PORT:-3129}
       VPN_READY_FILE: /shared/vpn.ready
     volumes:
       - shared-state:/shared
+    ports:
+      - "${PROXY_BIND_ADDRESS:-0.0.0.0}:${PROXY_PORT:-3128}:${PROXY_PORT:-3128}"
     healthcheck:
       test: ["CMD", "/app/proxy-healthcheck.sh"]
       interval: 20s

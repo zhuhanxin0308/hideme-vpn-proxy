@@ -8,7 +8,7 @@ import unittest
 
 
 class VpnHealthcheckTests(unittest.TestCase):
-    """验证 VPN 健康检查脚本会做真实解析检查。"""
+    """验证 VPN 健康检查脚本只检查 Google 访问能力。"""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -21,87 +21,49 @@ class VpnHealthcheckTests(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
-    def _run_healthcheck(self, *, lookup_success: bool) -> tuple[subprocess.CompletedProcess[str], pathlib.Path]:
+    def _run_healthcheck(self, *, access_success: bool) -> tuple[subprocess.CompletedProcess[str], pathlib.Path]:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
 
         temp_path = pathlib.Path(temp_dir.name)
         fake_bin_dir = temp_path / "fake-bin"
         fake_bin_dir.mkdir()
-
-        ready_file = temp_path / "vpn.ready"
-        ready_file.write_text("ready\n", encoding="utf-8")
-        resolv_conf = temp_path / "resolv.conf"
-        resolv_conf.write_text("nameserver 10.58.180.1\nnameserver 8.8.8.8\n", encoding="utf-8")
-        getent_log = temp_path / "getent.log"
+        curl_log = temp_path / "curl.log"
 
         self._write_executable(
-            fake_bin_dir / "ip",
+            fake_bin_dir / "curl",
             textwrap.dedent(
-                """\
+                f"""\
                 #!/bin/sh
                 set -eu
 
-                if [ "$1" = "link" ] && [ "$2" = "show" ]; then
+                printf '%s\\n' "$*" > "{curl_log}"
+                if [ "$TEST_GOOGLE_ACCESS" = "true" ]; then
                   exit 0
                 fi
-
-                if [ "$1" = "-o" ] && [ "$2" = "addr" ] && [ "$3" = "show" ]; then
-                  printf '3: vpn    inet 10.58.180.201/32 scope global vpn\\n'
-                  exit 0
-                fi
-
-                if [ "$1" = "rule" ] && [ "$2" = "show" ]; then
-                  printf '0: from all lookup local\\n'
-                  printf '10: from all lookup 55555\\n'
-                  printf '32766: from all lookup main\\n'
-                  printf '32767: from all lookup default\\n'
-                  exit 0
-                fi
-
-                if [ "$1" = "route" ] && [ "$2" = "show" ] && [ "$3" = "table" ] && [ "$4" = "55555" ]; then
-                  printf '0.0.0.0/1 via 10.58.180.1 dev vpn mtu 1392\\n'
-                  printf '128.0.0.0/1 via 10.58.180.1 dev vpn mtu 1392\\n'
-                  exit 0
-                fi
-
-                if [ "$1" = "-6" ] && [ "$2" = "route" ] && [ "$3" = "show" ] && [ "$4" = "table" ] && [ "$5" = "55555" ]; then
-                  exit 0
-                fi
-
-                exit 1
+                exit 22
                 """
             ),
         )
 
-        lookup_script = (
-            f"printf '%s\\n' \"$*\" > \"{getent_log}\"\n"
-            + ("printf '198.18.0.38 www.google.com\\n'\n" if lookup_success else "exit 2\n")
-        )
-        self._write_executable(
-            fake_bin_dir / "getent",
-            "#!/bin/sh\nset -eu\n" + lookup_script,
-        )
+        for command_name in ("ip", "getent", "timeout"):
+            self._write_executable(
+                fake_bin_dir / command_name,
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
 
-        self._write_executable(
-            fake_bin_dir / "timeout",
-            textwrap.dedent(
-                """\
-                #!/bin/sh
-                set -eu
-
-                duration="$1"
-                shift
-                exec "$@"
-                """
-            ),
-        )
+                    echo "vpn healthcheck must not execute {command_name}" >&2
+                    exit 91
+                    """
+                ),
+            )
 
         env = os.environ.copy()
         env.update(
             {
-                "VPN_READY_FILE": str(ready_file),
-                "VPN_RESOLV_CONF_PATH": str(resolv_conf),
+                "TEST_GOOGLE_ACCESS": "true" if access_success else "false",
                 "PATH": f"{fake_bin_dir}:{env['PATH']}",
             }
         )
@@ -116,21 +78,24 @@ class VpnHealthcheckTests(unittest.TestCase):
             check=False,
         )
 
-        return completed, getent_log
+        return completed, curl_log
 
-    def test_healthcheck_performs_real_dns_lookup(self) -> None:
-        # DNS 健康检查必须执行真实域名解析，而不是只验证 53 端口可连。
-        completed, getent_log = self._run_healthcheck(lookup_success=True)
+    def test_healthcheck_only_curls_google_without_extra_checks(self) -> None:
+        # 健康检查只应访问 Google，不能再因为 ready 文件、接口、路由或 resolv.conf 状态触发重启。
+        completed, curl_log = self._run_healthcheck(access_success=True)
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(getent_log.read_text(encoding="utf-8").strip(), "hosts www.google.com")
+        curl_args = curl_log.read_text(encoding="utf-8").strip()
+        self.assertIn("--fail", curl_args)
+        self.assertIn("--max-time 5", curl_args)
+        self.assertIn("https://www.google.com/", curl_args)
 
-    def test_healthcheck_fails_when_dns_lookup_fails(self) -> None:
-        # 当域名解析失败时，VPN 健康检查必须转为失败状态。
-        completed, _ = self._run_healthcheck(lookup_success=False)
+    def test_healthcheck_fails_when_google_is_unreachable(self) -> None:
+        # 只有 Google 访问失败时，VPN 健康检查才应失败。
+        completed, _ = self._run_healthcheck(access_success=False)
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("dns lookup failed", completed.stderr)
+        self.assertIn("cannot access https://www.google.com/", completed.stderr)
 
 
 if __name__ == "__main__":

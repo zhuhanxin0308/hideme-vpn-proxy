@@ -16,6 +16,24 @@ class ImageRepositoryLayoutTests(unittest.TestCase):
         cls.workflow_path = cls.repo_root / ".github" / "workflows" / "publish-images.yml"
         cls.workflow_text = cls.workflow_path.read_text(encoding="utf-8") if cls.workflow_path.exists() else ""
 
+    def _compose_block(self, service_name: str) -> str:
+        # 按服务名截取 compose 片段，避免测试被其他服务的同名字段干扰。
+        lines = self.compose_text.splitlines(keepends=True)
+        service_marker = f"  {service_name}:"
+        start = next(index for index, line in enumerate(lines) if line.rstrip("\n") == service_marker)
+        end = len(lines)
+
+        for index in range(start + 1, len(lines)):
+            line = lines[index]
+            if line and not line.startswith(" "):
+                end = index
+                break
+            if line.startswith("  ") and not line.startswith("    ") and line.strip().endswith(":"):
+                end = index
+                break
+
+        return "".join(lines[start:end])
+
     def test_duplicate_inner_project_directory_is_removed(self) -> None:
         # 内层重复目录会造成错误构建上下文，必须彻底移除。
         self.assertFalse((self.repo_root / "hideme-vpn-http-proxy").exists())
@@ -66,8 +84,10 @@ class ImageRepositoryLayoutTests(unittest.TestCase):
 
     def test_vpn_healthcheck_uses_dedicated_script(self) -> None:
         # VPN 健康检查必须调用自己的脚本，不能误接到 proxy 的检查逻辑。
-        self.assertIn('test: ["CMD", "/app/vpn-healthcheck.sh"]', self.compose_text)
-        self.assertNotIn('test: ["CMD", "/app/proxy-healthcheck.sh"]', self.compose_text.split("  proxy:")[0])
+        vpn_block = self._compose_block("vpn")
+
+        self.assertIn('test: ["CMD", "/app/vpn-healthcheck.sh"]', vpn_block)
+        self.assertNotIn('test: ["CMD", "/app/proxy-healthcheck.sh"]', vpn_block)
 
     def test_vpn_fallback_dns_defaults_to_google_public_dns(self) -> None:
         # 运行时需要把 8.8.8.8 注入 resolv.conf，因此默认配置必须显式暴露出来。
@@ -87,6 +107,29 @@ class ImageRepositoryLayoutTests(unittest.TestCase):
         # proxy 健康检查只需要判断端口是否已进入监听，不应再依赖 nc 或 HTTP CONNECT。
         self.assertIn('test: ["CMD", "/app/proxy-healthcheck.sh"]', self.compose_text)
         self.assertNotIn("netcat-openbsd", self.proxy_dockerfile_text)
+
+    def test_public_proxy_uses_separate_ingress_and_vpn_egress(self) -> None:
+        # 任意公网来源只能连接普通网络命名空间里的入口代理，VPN 出口代理不应直接发布到宿主机。
+        vpn_block = self._compose_block("vpn")
+        proxy_block = self._compose_block("proxy")
+        egress_block = self._compose_block("proxy-egress")
+
+        self.assertNotIn("ports:", vpn_block)
+        self.assertIn('ports:', proxy_block)
+        self.assertIn('"${PROXY_BIND_ADDRESS:-0.0.0.0}:${PROXY_PORT:-3128}:${PROXY_PORT:-3128}"', proxy_block)
+        self.assertIn("PROXY_UPSTREAM_TYPE: http", proxy_block)
+        self.assertIn("PROXY_UPSTREAM_HOST: vpn", proxy_block)
+        self.assertIn("PROXY_UPSTREAM_PORT: ${PROXY_EGRESS_PORT:-3129}", proxy_block)
+        self.assertIn('network_mode: "service:vpn"', egress_block)
+        self.assertIn("PROXY_PORT: ${PROXY_EGRESS_PORT:-3129}", egress_block)
+        self.assertNotIn("ports:", egress_block)
+
+    def test_public_proxy_environment_defaults_are_exposed(self) -> None:
+        # 公网入口需要显式主机绑定、认证开关、内部出口端口和 Docker 内网绕过配置。
+        self.assertIn("PROXY_BIND_ADDRESS=0.0.0.0", self.env_example_text)
+        self.assertIn("PROXY_REQUIRE_AUTH=true", self.env_example_text)
+        self.assertIn("PROXY_EGRESS_PORT=3129", self.env_example_text)
+        self.assertIn("VPN_LOCAL_BYPASS_CIDRS=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16", self.env_example_text)
 
     def test_publish_workflow_exists(self) -> None:
         # 发布工作流是交付目标之一，文件必须存在。

@@ -25,6 +25,8 @@ class VpnEntrypointTests(unittest.TestCase):
         self,
         kill_switch: str,
         token_host: str | None = None,
+        split_bypass: str | None = None,
+        local_bypass: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path]:
         # 通过临时目录隔离 token、ready 标记和伪造命令日志，避免污染宿主环境。
         temp_dir = tempfile.TemporaryDirectory()
@@ -139,6 +141,10 @@ class VpnEntrypointTests(unittest.TestCase):
         )
         if token_host is not None:
             env["HIDEME_TOKEN_HOST"] = token_host
+        if split_bypass is not None:
+            env["SPLIT_TUNNEL_BYPASS"] = split_bypass
+        if local_bypass is not None:
+            env["VPN_LOCAL_BYPASS_CIDRS"] = local_bypass
 
         completed = subprocess.run(
             ["/bin/sh", str(self.entrypoint_path)],
@@ -186,6 +192,18 @@ class VpnEntrypointTests(unittest.TestCase):
         self.assertNotIn("-u", connect_line)
         self.assertNotIn(" token ", connect_line)
         self.assertIn("connect any", connect_line)
+
+    def test_entrypoint_bypasses_local_docker_networks_for_public_ingress(self) -> None:
+        # 公网入口容器访问 VPN 出口代理时，回程必须绕过 VPN 策略路由。
+        completed, invocation_log, _, _, _, _ = self._run_entrypoint("true", split_bypass="203.0.113.24/32")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        connect_line = next(
+            line
+            for line in invocation_log.read_text(encoding="utf-8").strip().splitlines()
+            if " connect " in f" {line} "
+        )
+        self.assertIn("-s 127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,203.0.113.24/32", connect_line)
 
     def test_entrypoint_passes_false_kill_switch_value(self) -> None:
         # 显式关闭 kill-switch 时，也必须以 hide.me 接受的值传递给 connect 命令。

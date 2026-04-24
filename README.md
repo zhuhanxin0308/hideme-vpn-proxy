@@ -1,38 +1,19 @@
-# hide.me + HTTP/HTTPS 正向代理（双服务，共享网络命名空间）
+# hide.me + HTTP/HTTPS 正向代理（公网入口 + VPN 出口）
 
 这是按你指定的结构做的版本：
 
 - `vpn`：运行 hide.me 开源 Linux CLI，负责登录、取 token、连接指定节点
-- `proxy`：运行 Tinyproxy，提供 HTTP/HTTPS 正向代理
-- `proxy` 使用 `network_mode: "service:vpn"`，与 `vpn` 共享同一个网络命名空间
-- 宿主机只发布一个代理端口；你的客户端只需要设置代理 IP 和端口
+- `proxy-egress`：运行在 `vpn` 网络命名空间内，负责通过 VPN 出站
+- `proxy`：运行在普通 Docker 网络内，发布公网入口端口并转发到 `proxy-egress`
+- 宿主机只发布 `proxy` 的入口端口；你的客户端只需要设置代理 IP、端口和认证
 
 ## 这套结构的边界
 
-这套结构的核心优点是：**代理的出站流量天然跟随 VPN**。
+这套结构允许任意公网来源连接入口代理，出站流量仍由 VPN 命名空间里的出口代理完成。
 
-但要注意一件很重要的事：hide.me 的 leak protection / kill-switch 是基于**策略路由 + 黑洞路由**。因此，凡是不应该走 VPN 的回程流量，都必须被列进 split-tunnel 绕过范围。
+公网入口默认要求 Basic Auth。不要把 `PROXY_REQUIRE_AUTH` 改成 `false` 后直接暴露到公网，否则会变成开放代理。
 
-这意味着：
-
-- **同一台宿主机自己使用这个代理**：通常最容易跑通
-- **固定来源网段访问这个代理**：可行，把来源 CIDR 写进 `SPLIT_TUNNEL_BYPASS`
-- **任意公网客户端都来访问这个代理**：不稳，因为回程流量可能被 VPN 默认路由带走
-
-所以，这个项目最适合：
-
-- 你自己在固定出口 IP 的机器上使用
-- 办公网、家宽、跳板机等**已知来源网段**访问
-
-如果你的目标是“完全对公网开放，任何地方都能连”，那你之前那种**分离 ingress 和 VPN egress**的架构仍然更稳。
-
-## 为什么这样设计
-
-Docker Compose 官方文档说明，`network_mode: "service:{name}"` 会让一个服务加入另一个服务的网络命名空间；同时设置了 `network_mode` 后，不能再给这个服务单独配置 `networks`。这正适合“VPN 容器提供网络栈，代理容器共享它”的模式。
-
-hide.me 官方开源仓库 README 说明，这个 Linux CLI 基于 WireGuard；连接流程是先申请 Access-Token，再执行 `connect`；它的 leak protection 不依赖 iptables，而是通过路由策略和黑洞路由实现，并允许显式 split-tunnel 绕过。
-
-Tinyproxy 是一个轻量级 HTTP/HTTPS 正向代理，正好满足“只提供代理，不处理 AI 业务”的需求。
+`proxy-egress` 只允许 Docker 常见内网段访问，默认不发布宿主机端口。
 
 ## 目录结构
 
@@ -42,11 +23,13 @@ hideme-vpn-http-proxy/
   .env.example
   vpn/
     Dockerfile
+    entrypoint.sh
+    healthcheck.sh
   proxy/
     Dockerfile
-  scripts/
-    vpn-entrypoint.sh
-    proxy-entrypoint.sh
+    entrypoint.sh
+    healthcheck.sh
+  tests/
   README.md
 ```
 
@@ -77,10 +60,18 @@ hideme-vpn-http-proxy/
 
 1. 等待 `/shared/vpn.ready`
 2. 生成 tinyproxy 配置
-3. 在与 `vpn` 共享的网络命名空间中监听 `PROXY_PORT`
-4. 支持普通 HTTP 代理和 HTTPS `CONNECT`
+3. 在普通 Docker 网络中监听 `PROXY_PORT`
+4. 通过 `Upstream http vpn:PROXY_EGRESS_PORT` 转发到出口代理
+5. 支持普通 HTTP 代理和 HTTPS `CONNECT`
 
-因为 `proxy` 和 `vpn` 共用一个网络命名空间，真正发布端口的是 `vpn` 服务；但监听这个端口的进程是 `proxy` 容器里的 tinyproxy。
+### `proxy-egress` 服务
+
+启动时会：
+
+1. 等待 `/shared/vpn.ready`
+2. 在与 `vpn` 共享的网络命名空间中监听 `PROXY_EGRESS_PORT`
+3. 接收 `proxy` 的上游转发请求
+4. 通过 VPN 出站访问目标地址
 
 ## 快速开始
 
@@ -106,28 +97,24 @@ PROXY_BASIC_AUTH_USER=proxyuser
 PROXY_BASIC_AUTH_PASSWORD=change-me
 ```
 
-如果你不是在同一台宿主机上访问，而是从固定外部来源访问，记得加：
+公网入口默认绑定所有网卡：
 
 ```env
-SPLIT_TUNNEL_BYPASS=你的客户端出口IP/32
+PROXY_BIND_ADDRESS=0.0.0.0
 ```
 
-例如：
+如果只想绑定指定宿主机 IP：
+
+```env
+PROXY_BIND_ADDRESS=203.0.113.10
+```
+
+`SPLIT_TUNNEL_BYPASS` 只用于补充额外直连回程 CIDR，公网入口模式通常不需要设置。
+
+例如需要保留某个固定来源直连回程：
 
 ```env
 SPLIT_TUNNEL_BYPASS=203.0.113.24/32
-```
-
-如果你要允许一整段办公网：
-
-```env
-SPLIT_TUNNEL_BYPASS=203.0.113.0/24
-```
-
-多个网段用逗号分隔：
-
-```env
-SPLIT_TUNNEL_BYPASS=203.0.113.24/32,198.51.100.0/24
 ```
 
 ## 环境变量说明
@@ -141,17 +128,22 @@ SPLIT_TUNNEL_BYPASS=203.0.113.24/32,198.51.100.0/24
 - `HIDEME_INTERFACE`：默认 `vpn`
 - `HIDEME_TUNNEL_MODE`：`ipv4`、`ipv6`、`dual`，默认 `ipv4`
 - `HIDEME_KILL_SWITCH`：默认 `true`
+- `VPN_LOCAL_BYPASS_CIDRS`：默认绕过本地和 Docker 常见内网段
 - `SPLIT_TUNNEL_BYPASS`：额外直连 CIDR，多个用逗号分隔
 - `EXTRA_CONNECT_ARGS`：额外透传给 `hide.me connect`
 
 ### 代理相关
 
+- `PROXY_BIND_ADDRESS`：宿主机发布端口绑定地址，默认 `0.0.0.0`
 - `PROXY_PORT`：默认 `3128`
 - `PROXY_LISTEN`：默认 `0.0.0.0`
 - `PROXY_ALLOW`：允许访问代理的 CIDR 列表，多个用逗号分隔
+- `PROXY_REQUIRE_AUTH`：默认 `true`
 - `PROXY_BASIC_AUTH_USER` / `PROXY_BASIC_AUTH_PASSWORD`：可选 Basic Auth
 - `PROXY_TIMEOUT`：默认 `600`
 - `PROXY_MAX_CLIENTS`：默认 `200`
+- `PROXY_EGRESS_PORT`：内部出口代理端口，默认 `3129`
+- `PROXY_EGRESS_ALLOW`：允许访问内部出口代理的 CIDR 列表
 
 ## 启动
 
@@ -162,7 +154,7 @@ docker compose up -d --build
 查看日志：
 
 ```bash
-docker compose logs -f vpn proxy
+docker compose logs -f vpn proxy-egress proxy
 ```
 
 ## 使用方法
@@ -222,7 +214,8 @@ docker compose exec vpn sh -lc 'ls -l /shared && ip link show vpn'
 ### 查看代理是否在监听
 
 ```bash
-docker compose exec proxy sh -lc '/app/proxy-healthcheck.sh && echo proxy healthy'
+docker compose exec proxy sh -lc '/app/proxy-healthcheck.sh && echo ingress healthy'
+docker compose exec proxy-egress sh -lc '/app/proxy-healthcheck.sh && echo egress healthy'
 ```
 
 ### 常见问题
@@ -241,15 +234,11 @@ docker compose exec proxy sh -lc '/app/proxy-healthcheck.sh && echo proxy health
 
 #### 3. 外部机器连得上端口，但请求不通
 
-大概率是**回程流量没有加入 split-tunnel 绕过**。
+优先检查：
 
-先把发起请求的客户端出口 IP / CIDR 加入：
-
-```env
-SPLIT_TUNNEL_BYPASS=203.0.113.24/32
-```
-
-如果是多个固定来源，就全部列进去。
+- `PROXY_BASIC_AUTH_USER` 和 `PROXY_BASIC_AUTH_PASSWORD` 是否已经设置
+- `proxy-egress` 是否健康
+- `VPN_LOCAL_BYPASS_CIDRS` 是否包含当前 Docker 网络网段
 
 #### 4. 为什么没有 SOCKS5
 
@@ -261,6 +250,6 @@ SPLIT_TUNNEL_BYPASS=203.0.113.24/32
 
 - 设置 `PROXY_BASIC_AUTH_USER` 和 `PROXY_BASIC_AUTH_PASSWORD`
 - 设置 `PROXY_ALLOW` 只允许你的办公网 / 家宽出口 IP
-- 配合 `SPLIT_TUNNEL_BYPASS` 只放已知来源
+- 保持 `PROXY_REQUIRE_AUTH=true`
 
 否则你把端口直接暴露到公网，就会变成开放代理。
